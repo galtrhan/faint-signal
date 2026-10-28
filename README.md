@@ -6,6 +6,10 @@ Official Signal Desktop is a slow vampire. Leave a chat open and it keeps a fat 
 
 It uses official `libsignal` through [presage](https://github.com/whisperfish/presage). Voice calls use Signal [RingRTC](https://github.com/signalapp/ringrtc) when you build that feature. Video calls stay out of v1.
 
+## AI usage
+
+I barely know Rust. This exists because I need the tool, not because I set out to learn the language. Cursor Auto writes most of the code. I set direction and review what it produces.
+
 ## License
 
 FaintSignal is **AGPL-3.0-only**. That matches the Signal libraries it links (`libsignal`, `presage`, `libsignal-service-rs`, and RingRTC if enabled). See [LICENSE](LICENSE) and [NOTICE](NOTICE).
