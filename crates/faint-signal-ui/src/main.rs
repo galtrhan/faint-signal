@@ -35,6 +35,8 @@ struct App {
     call: CallSnapshot,
     session: Option<SessionHandle>,
     linking: bool,
+    /// True while a receive+refresh task is in flight (skip stacked 5s ticks).
+    syncing: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +82,7 @@ impl App {
                 call: CallSnapshot::idle(),
                 session: None,
                 linking: false,
+                syncing: false,
             },
             Task::perform(boot_existing(), Message::Boot),
         )
@@ -87,7 +90,6 @@ impl App {
 
     fn subscription(&self) -> Subscription<Message> {
         if self.session.is_some() {
-            // Lists + call chrome only; whoami is cached on Boot / LinkDone.
             iced::time::every(std::time::Duration::from_secs(5)).map(|_| Message::Refresh)
         } else {
             Subscription::none()
@@ -97,6 +99,7 @@ impl App {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Boot(Ok(data)) | Message::Refreshed(Ok(data)) => {
+                self.syncing = false;
                 if let Some(s) = data.session {
                     self.session = Some(s);
                 }
@@ -119,9 +122,11 @@ impl App {
                 }
             }
             Message::Boot(Err(e)) => {
+                self.syncing = false;
                 self.status = format!("Not linked ({e}). Use Link device.");
             }
             Message::Refreshed(Err(e)) => {
+                self.syncing = false;
                 self.status = format!("Refresh error: {e}");
             }
             Message::MessagesLoaded(Ok((id, messages))) => {
@@ -155,13 +160,24 @@ impl App {
             Message::Sent(Ok(())) => {
                 if let Some(session) = self.session.clone() {
                     let selected = self.selected;
-                    return Task::perform(refresh(session, selected, false), Message::Refreshed);
+                    return Task::perform(
+                        refresh(session, selected, false, false),
+                        Message::Refreshed,
+                    );
                 }
             }
             Message::Sent(Err(e)) => self.status = format!("Failed: {e}"),
             Message::Refresh => {
+                if self.syncing {
+                    return Task::none();
+                }
                 if let Some(session) = self.session.clone() {
-                    return Task::perform(refresh_lists(session), Message::Refreshed);
+                    self.syncing = true;
+                    let selected = self.selected;
+                    return Task::perform(
+                        sync_then(session, selected, false, false),
+                        Message::Refreshed,
+                    );
                 }
             }
             Message::LinkDevice => {
@@ -176,8 +192,12 @@ impl App {
             Message::LinkDone(Ok((handle, who))) => {
                 self.linking = false;
                 self.session = Some(handle.clone());
-                self.status = who;
-                return Task::perform(refresh(handle, None, false), Message::Refreshed);
+                self.syncing = true;
+                self.status = format!("Syncing inbox… ({who})");
+                return Task::perform(
+                    sync_then(handle, None, true, true),
+                    Message::Refreshed,
+                );
             }
             Message::LinkDone(Err(e)) => {
                 self.linking = false;
@@ -607,7 +627,7 @@ async fn boot_existing() -> Result<BootData, String> {
     let mut last = String::from("session actor not ready");
     for _ in 0..40 {
         match handle.whoami().await {
-            Ok(_) => return refresh(handle, None, true).await,
+            Ok(_) => return sync_then(handle, None, true, true).await,
             Err(e) => {
                 last = e.to_string();
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -617,11 +637,30 @@ async fn boot_existing() -> Result<BootData, String> {
     Err(last)
 }
 
-/// Full refresh: conversations, open thread, call chrome.
+async fn receive_soft(session: &SessionHandle) {
+    if let Err(e) = session.receive_once().await {
+        tracing::warn!(error = %e, "inbox sync failed");
+    }
+}
+
+/// Soft-fail inbox pull, then read the local cache.
+async fn sync_then(
+    session: SessionHandle,
+    selected: Option<Uuid>,
+    with_whoami: bool,
+    pick_default: bool,
+) -> Result<BootData, String> {
+    receive_soft(&session).await;
+    refresh(session, selected, with_whoami, pick_default).await
+}
+
+/// Read conversations, optional open thread, and call chrome from the local cache.
+/// When `pick_default` is set and nothing is selected, open the newest conversation.
 async fn refresh(
     session: SessionHandle,
     selected: Option<Uuid>,
     with_whoami: bool,
+    pick_default: bool,
 ) -> Result<BootData, String> {
     let whoami = if with_whoami {
         session.whoami().await.map_err(err)?
@@ -629,7 +668,11 @@ async fn refresh(
         String::new()
     };
     let conversations = session.list_conversations(100).await.map_err(err)?;
-    let selected = selected.or_else(|| conversations.first().map(|c| c.id));
+    let selected = if pick_default {
+        selected.or_else(|| conversations.first().map(|c| c.id))
+    } else {
+        selected
+    };
     let messages = if let Some(id) = selected {
         session.messages_page(id, 100).await.map_err(err)?
     } else {
@@ -642,20 +685,6 @@ async fn refresh(
         messages,
         selected,
         whoami,
-        call,
-    })
-}
-
-/// Periodic tick: conversation list + call only (keep the open thread).
-async fn refresh_lists(session: SessionHandle) -> Result<BootData, String> {
-    let conversations = session.list_conversations(100).await.map_err(err)?;
-    let call = session.call_snapshot().await.map_err(err)?;
-    Ok(BootData {
-        session: Some(session),
-        conversations,
-        messages: Vec::new(),
-        selected: None,
-        whoami: String::new(),
         call,
     })
 }

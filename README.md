@@ -16,6 +16,8 @@ FaintSignal is **AGPL-3.0-only**. That matches the Signal libraries it links (`l
 
 ## Status
 
+**Work in progress.** This is not ready for daily use. Linking, basic send/receive, and a thin UI exist. Contacts sync, groups, attachments, receipts, edits, and solid calling still need a lot of work. Expect breakage. Treat it as a lab project, not a messenger you depend on.
+
 This is an unofficial client. Signal does not support it. Protocol fields move. Pin library revisions and read `docs/protocol-compat.md`.
 
 ## Build
