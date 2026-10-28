@@ -1,0 +1,22 @@
+[package]
+name = "faint-signal-cli"
+description = "FaintSignal command-line client (link, send, receive, RSS)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "faintsignal"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+faint-signal-core.workspace = true
+faint-signal-store.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true

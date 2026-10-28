@@ -1,0 +1,52 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/faint-signal-core",
+    "crates/faint-signal-store",
+    "crates/faint-signal-calls",
+    "crates/faint-signal-cli",
+    "crates/faint-signal-ui",
+]
+default-members = ["crates/faint-signal-cli", "crates/faint-signal-ui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+authors = ["FaintSignal contributors"]
+repository = "https://github.com/local/faintsignal"
+rust-version = "1.85"
+
+[workspace.dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+directories = "6.0"
+futures = "0.3"
+qr2term = "0.3.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "sync", "time", "io-util", "io-std", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1.11", features = ["v4", "v5", "serde"] }
+url = "2.5"
+
+# Pin matches a known-working gurk / Whisperfish combo.
+presage = { git = "https://github.com/whisperfish/presage", rev = "94b3978f5456469cfd4d9f72351a5eff93715f81", default-features = false }
+presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "94b3978f5456469cfd4d9f72351a5eff93715f81", default-features = false }
+
+faint-signal-core = { path = "crates/faint-signal-core" }
+faint-signal-store = { path = "crates/faint-signal-store" }
+faint-signal-calls = { path = "crates/faint-signal-calls" }
+
+[profile.dev]
+# Faster SQLCipher decrypt on debug builds (same trick as gurk).
+opt-level = 1
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

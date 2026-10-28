@@ -1,0 +1,23 @@
+[package]
+name = "faint-signal-ui"
+description = "FaintSignal Linux GUI (iced)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "faintsignal-ui"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+faint-signal-core.workspace = true
+faint-signal-store.workspace = true
+faint-signal-calls.workspace = true
+iced = { version = "0.13", features = ["tokio", "debug"] }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true

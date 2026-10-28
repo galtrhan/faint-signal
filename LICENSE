@@ -1,0 +1,15 @@
+                    GNU AFFERO GENERAL PUBLIC LICENSE
+                       Version 3, 19 November 2007
+
+ Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>
+ Everyone is permitted to copy and distribute verbatim copies
+ of this license document, but changing it is not allowed.
+
+FaintSignal is licensed under the GNU Affero General Public License
+version 3 only (AGPL-3.0-only).
+
+It links AGPL-licensed Signal protocol libraries (libsignal via
+presage / libsignal-service-rs). Those terms apply to this project as well.
+
+The full text of the GNU Affero General Public License version 3 is available at:
+https://www.gnu.org/licenses/agpl-3.0.txt

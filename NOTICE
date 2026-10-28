@@ -1,0 +1,19 @@
+FaintSignal
+Copyright (c) 2026 FaintSignal contributors
+
+This project is licensed under AGPL-3.0-only. See LICENSE.
+
+It also links these AGPL-3.0-only Signal-related projects. Keep their notices
+when you redistribute a build that includes them.
+
+- libsignal (Signal Messenger, LLC)
+  https://github.com/signalapp/libsignal
+- libsignal-service-rs (Whisperfish)
+  https://github.com/whisperfish/libsignal-service-rs
+- presage (Whisperfish)
+  https://github.com/whisperfish/presage
+- RingRTC (Signal Messenger, LLC), if you enable calling
+  https://github.com/signalapp/ringrtc
+
+Other Rust crates pulled by Cargo keep their own licenses (see Cargo.lock
+and each crate on crates.io).

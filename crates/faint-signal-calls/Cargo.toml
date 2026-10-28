@@ -1,0 +1,24 @@
+[package]
+name = "faint-signal-calls"
+description = "1:1 voice call signaling and RingRTC lifecycle for FaintSignal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# Enable when a local RingRTC build is available (see docs/calling.md).
+ringrtc = []
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+base64 = "0.22"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true

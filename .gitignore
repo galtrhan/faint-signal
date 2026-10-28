@@ -1,0 +1,12 @@
+/target/
+**/*.rs.bk
+.idea/
+.vscode/
+*.db
+*.db3
+*.db-journal
+*.db3-journal
+.env
+.DS_Store
+qr.png
+/data/
