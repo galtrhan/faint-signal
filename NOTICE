@@ -17,3 +17,9 @@ when you redistribute a build that includes them.
 
 Other Rust crates pulled by Cargo keep their own licenses (see Cargo.lock
 and each crate on crates.io).
+
+Bundled icons
+- Lucide "signal-low" and "settings" (ISC), used as app mark and UI icons.
+  https://lucide.dev/icons/signal-low
+  https://lucide.dev/icons/settings
+  Full text: crates/faint-signal-ui/assets/licenses/lucide-ISC.txt

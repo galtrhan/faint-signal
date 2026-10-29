@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- App mark: Lucide signal-low on FaintSignal dark chrome. ISC for the glyph. -->
+  <rect width="512" height="512" rx="112" fill="#121212"/>
+  <g
+    transform="translate(256 270) scale(16) translate(-4.5 -18)"
+    fill="none"
+    stroke="#F6F6F6"
+    stroke-width="2.25"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M2 20h.01" />
+    <path d="M7 20v-4" />
+  </g>
+</svg>

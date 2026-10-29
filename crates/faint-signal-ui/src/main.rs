@@ -19,9 +19,18 @@ fn main() -> iced::Result {
         )
         .init();
     print_rss("ui-start");
+    let icon = iced::window::icon::from_file_data(
+        include_bytes!("../assets/icons/faintsignal-256.png"),
+        None,
+    )
+    .ok();
     iced::application("FaintSignal", App::update, App::view)
         .theme(|_| Theme::Dark)
         .subscription(App::subscription)
+        .window(iced::window::Settings {
+            icon,
+            ..Default::default()
+        })
         .run_with(App::new)
 }
 
