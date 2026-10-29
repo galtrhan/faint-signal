@@ -1,15 +1,22 @@
 //! FaintSignal Linux UI — Signal Desktop–style chat layout (iced).
 
+mod settings;
 mod theme;
+mod tray;
 
 use faint_signal_calls::{CallPhase, CallSnapshot};
 use faint_signal_core::{print_rss, SessionConfig, SessionHandle};
 use faint_signal_store::{ConversationRow, MessageRow};
 use iced::alignment::{Horizontal, Vertical};
-use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
-use iced::{Color, Element, Length, Padding, Subscription, Task, Theme};
+use iced::widget::{button, column, container, row, scrollable, text, text_input, toggler, Space};
+use iced::window::{self, Id as WindowId};
+use iced::{exit, Color, Element, Length, Padding, Size, Subscription, Task, Theme};
+use settings::UiSettings;
 use theme::{GRAY_02, GRAY_25, GRAY_45, GRAY_95, STAMP_OUT};
+use tray::{TrayAction, TrayHost};
 use uuid::Uuid;
+
+pub(crate) const APP_ICON_PNG: &[u8] = include_bytes!("../assets/icons/faintsignal-256.png");
 
 fn main() -> iced::Result {
     tracing_subscriber::fmt()
@@ -19,19 +26,21 @@ fn main() -> iced::Result {
         )
         .init();
     print_rss("ui-start");
-    let icon = iced::window::icon::from_file_data(
-        include_bytes!("../assets/icons/faintsignal-256.png"),
-        None,
-    )
-    .ok();
-    iced::application("FaintSignal", App::update, App::view)
-        .theme(|_| Theme::Dark)
+    iced::daemon(App::title, App::update, App::view)
+        .theme(|_app, _id| Theme::Dark)
         .subscription(App::subscription)
-        .window(iced::window::Settings {
-            icon,
-            ..Default::default()
-        })
         .run_with(App::new)
+}
+
+fn app_icon() -> Option<window::Icon> {
+    window::icon::from_file_data(APP_ICON_PNG, None).ok()
+}
+
+fn focus_window(id: WindowId) -> Task<Message> {
+    Task::batch([
+        window::change_mode(id, window::Mode::Windowed),
+        window::gain_focus(id),
+    ])
 }
 
 struct App {
@@ -46,6 +55,13 @@ struct App {
     linking: bool,
     /// True while a receive+refresh task is in flight (skip stacked 5s ticks).
     syncing: bool,
+    prefs: UiSettings,
+    main_window: WindowId,
+    settings_window: Option<WindowId>,
+    /// False while the main window is hidden to the tray.
+    main_visible: bool,
+    /// Kept alive while "Use system Tray" is on.
+    tray: Option<TrayHost>,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +81,14 @@ enum Message {
     Hangup,
     AcceptCall,
     MuteToggle,
+    OpenSettings,
+    CloseSettings,
+    WindowCloseRequested(WindowId),
+    WindowClosed(WindowId),
+    ToggleUseSystemTray(bool),
+    ToggleCloseToSystemTray(bool),
+    PollTray,
+    Tray(TrayAction),
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +104,18 @@ struct BootData {
 
 impl App {
     fn new() -> (Self, Task<Message>) {
+        let prefs = UiSettings::load();
+        let (main_window, open_main) = window::open(window::Settings {
+            icon: app_icon(),
+            size: Size::new(1100.0, 720.0),
+            exit_on_close_request: false,
+            ..Default::default()
+        });
+        let tray = if prefs.use_system_tray {
+            tray::create()
+        } else {
+            None
+        };
         (
             Self {
                 status: "Loading…".into(),
@@ -92,17 +128,89 @@ impl App {
                 session: None,
                 linking: false,
                 syncing: false,
+                prefs,
+                main_window,
+                settings_window: None,
+                main_visible: true,
+                tray,
             },
-            Task::perform(boot_existing(), Message::Boot),
+            Task::batch([
+                open_main.discard(),
+                Task::perform(boot_existing(), Message::Boot),
+            ]),
         )
     }
 
-    fn subscription(&self) -> Subscription<Message> {
-        if self.session.is_some() {
-            iced::time::every(std::time::Duration::from_secs(5)).map(|_| Message::Refresh)
+    fn title(&self, id: WindowId) -> String {
+        if self.settings_window == Some(id) {
+            "Settings".into()
         } else {
-            Subscription::none()
+            "FaintSignal".into()
         }
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        let mut subs = vec![
+            window::close_requests().map(Message::WindowCloseRequested),
+            window::close_events().map(Message::WindowClosed),
+        ];
+        if self.session.is_some() {
+            subs.push(
+                iced::time::every(std::time::Duration::from_secs(5)).map(|_| Message::Refresh),
+            );
+        }
+        if self.tray.is_some() {
+            subs.push(
+                iced::time::every(std::time::Duration::from_millis(400)).map(|_| Message::PollTray),
+            );
+        }
+        Subscription::batch(subs)
+    }
+
+    fn sync_tray(&mut self) {
+        match (self.prefs.use_system_tray, self.tray.is_some()) {
+            (true, false) => self.tray = tray::create(),
+            (false, true) => self.tray = None,
+            _ => {}
+        }
+    }
+
+    fn open_settings_window(&mut self) -> Task<Message> {
+        if let Some(id) = self.settings_window {
+            return focus_window(id);
+        }
+        let (id, open) = window::open(window::Settings {
+            icon: app_icon(),
+            size: Size::new(420.0, 260.0),
+            min_size: Some(Size::new(360.0, 220.0)),
+            resizable: false,
+            exit_on_close_request: false,
+            ..Default::default()
+        });
+        self.settings_window = Some(id);
+        open.discard()
+    }
+
+    fn show_main_window(&mut self) -> Task<Message> {
+        self.main_visible = true;
+        focus_window(self.main_window)
+    }
+
+    /// Hide the main window and close Settings if it is open.
+    fn hide_to_tray(&mut self) -> Task<Message> {
+        self.main_visible = false;
+        let mut tasks = vec![window::change_mode(
+            self.main_window,
+            window::Mode::Hidden,
+        )];
+        if let Some(id) = self.settings_window {
+            tasks.push(window::close(id));
+        }
+        Task::batch(tasks)
+    }
+
+    fn can_hide_to_tray(&self) -> bool {
+        self.prefs.should_close_to_tray() && self.tray.is_some()
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -237,29 +345,142 @@ impl App {
                     return Task::perform(set_muted(session, muted), Message::Sent);
                 }
             }
+            Message::OpenSettings => return self.open_settings_window(),
+            Message::CloseSettings => {
+                if let Some(id) = self.settings_window {
+                    return window::close(id);
+                }
+            }
+            Message::WindowCloseRequested(id) => {
+                if Some(id) == self.settings_window {
+                    return window::close(id);
+                }
+                if id == self.main_window {
+                    if self.can_hide_to_tray() {
+                        return self.hide_to_tray();
+                    }
+                    return exit();
+                }
+            }
+            Message::WindowClosed(id) => {
+                if Some(id) == self.settings_window {
+                    self.settings_window = None;
+                }
+                if id == self.main_window && !self.can_hide_to_tray() {
+                    return exit();
+                }
+            }
+            Message::ToggleUseSystemTray(on) => {
+                self.prefs.use_system_tray = on;
+                if !on {
+                    self.prefs.close_to_system_tray = false;
+                }
+                self.prefs.save();
+                self.sync_tray();
+            }
+            Message::ToggleCloseToSystemTray(on) => {
+                if !self.prefs.use_system_tray {
+                    return Task::none();
+                }
+                self.prefs.close_to_system_tray = on;
+                self.prefs.save();
+            }
+            Message::PollTray => {
+                let Some(host) = self.tray.as_ref() else {
+                    return Task::none();
+                };
+                let actions = host.poll();
+                if actions.is_empty() {
+                    return Task::none();
+                }
+                return Task::batch(actions.into_iter().map(|a| Task::done(Message::Tray(a))));
+            }
+            Message::Tray(action) => match action {
+                TrayAction::Toggle => {
+                    if self.main_visible {
+                        return self.hide_to_tray();
+                    }
+                    return self.show_main_window();
+                }
+                TrayAction::Show => return self.show_main_window(),
+                TrayAction::OpenSettings => {
+                    let show = self.show_main_window();
+                    let settings = self.open_settings_window();
+                    return Task::batch([show, settings]);
+                }
+                TrayAction::Quit => return exit(),
+            },
         }
         Task::none()
     }
 
-    fn view(&self) -> Element<'_, Message> {
-        let body = row![
-            sidebar(self),
-            container(Space::new(1, Length::Fill)).style(theme::divider),
-            main_pane(self),
-        ]
-        .height(Length::Fill);
-
-        container(body)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .style(|_| theme::solid(GRAY_95))
-            .into()
+    fn view(&self, id: WindowId) -> Element<'_, Message> {
+        if self.settings_window == Some(id) {
+            return settings_view(self);
+        }
+        main_view(self)
     }
 
     fn selected_conversation(&self) -> Option<&ConversationRow> {
         let id = self.selected?;
         self.conversations.iter().find(|c| c.id == id)
     }
+}
+
+fn main_view(app: &App) -> Element<'_, Message> {
+    let body = row![
+        sidebar(app),
+        container(Space::new(1, Length::Fill)).style(theme::divider),
+        main_pane(app),
+    ]
+    .height(Length::Fill);
+
+    container(body)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(|_| theme::solid(GRAY_95))
+        .into()
+}
+
+fn settings_view(app: &App) -> Element<'_, Message> {
+    let use_tray = toggler(app.prefs.use_system_tray)
+        .label("Use system Tray")
+        .on_toggle(Message::ToggleUseSystemTray);
+
+    let mut close_to_tray =
+        toggler(app.prefs.close_to_system_tray).label("Close to System Tray");
+    if app.prefs.use_system_tray {
+        close_to_tray = close_to_tray.on_toggle(Message::ToggleCloseToSystemTray);
+    }
+
+    let mut body = column![
+        text("Settings").size(22).color(GRAY_02),
+        text("Tray").size(14).color(GRAY_45),
+        use_tray,
+        close_to_tray,
+    ]
+    .spacing(16);
+
+    if !app.prefs.use_system_tray {
+        body = body.push(
+            text("Turn on Use system Tray first.")
+                .size(12)
+                .color(GRAY_45),
+        );
+    }
+
+    body = body.push(Space::with_height(Length::Fill)).push(
+        button(text("Close").size(13))
+            .padding([8.0, 16.0])
+            .style(theme::ghost_btn)
+            .on_press(Message::CloseSettings),
+    );
+
+    container(body.padding(24).width(Length::Fill).height(Length::Fill))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(|_| theme::solid(GRAY_95))
+        .into()
 }
 
 fn sidebar(app: &App) -> Element<'_, Message> {
@@ -306,6 +527,10 @@ fn sidebar(app: &App) -> Element<'_, Message> {
                 .padding([6.0, 10.0])
                 .style(theme::ghost_btn)
                 .on_press(Message::LinkDevice),
+            button(text("⚙").size(14))
+                .padding([6.0, 10.0])
+                .style(theme::ghost_btn)
+                .on_press(Message::OpenSettings),
         ]
         .align_y(Vertical::Center)
         .spacing(4),
