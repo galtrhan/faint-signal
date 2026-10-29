@@ -5,7 +5,7 @@ use faint_signal_store::{ConversationRow, MessageRow};
 use presage::libsignal_service::content::{Content, ContentBody, DataMessage};
 use presage::libsignal_service::prelude::Uuid;
 use presage::proto::sync_message::Content as SyncContent;
-use presage::store::ContentExt;
+use presage::store::{ContentExt, Thread};
 use tracing::debug;
 
 #[derive(Debug)]
@@ -13,6 +13,8 @@ pub enum Incoming {
     Message {
         conversation: ConversationRow,
         message: MessageRow,
+        /// Parsed once here so session can resolve titles without a second TryFrom.
+        thread: Option<Thread>,
     },
     Call(CallSignal),
 }
@@ -22,7 +24,8 @@ pub fn content_to_incoming(content: &Content) -> Incoming {
         return Incoming::Call(call);
     }
 
-    let (conversation_id, kind, title) = conversation_from_content(content);
+    let (conversation_id, kind, title, thread) = conversation_from_content(content);
+    let sync_sent = is_sync_sent(content);
 
     let body = match &content.body {
         ContentBody::DataMessage(DataMessage { body, .. }) => body.clone(),
@@ -38,7 +41,7 @@ pub fn content_to_incoming(content: &Content) -> Incoming {
             kind,
             title,
             last_message_at: Some(sent_at),
-            unread: true,
+            unread: !sync_sent,
         },
         message: MessageRow {
             id: Uuid::new_v4(),
@@ -46,28 +49,51 @@ pub fn content_to_incoming(content: &Content) -> Incoming {
             sender,
             body,
             sent_at,
-            direction: "in".into(),
+            direction: if sync_sent {
+                "out".into()
+            } else {
+                "in".into()
+            },
         },
+        thread,
     }
 }
 
-fn conversation_from_content(content: &Content) -> (Uuid, String, String) {
-    if let ContentBody::DataMessage(DataMessage {
-        group_v2: Some(g), ..
-    }) = &content.body
-    {
-        if let Some(master_key) = g.master_key.as_ref() {
-            let id = Uuid::new_v5(&Uuid::NAMESPACE_OID, master_key);
-            return (
-                id,
-                "group".into(),
-                format!("group:{}", &id.to_string()[..8]),
-            );
+fn is_sync_sent(content: &Content) -> bool {
+    matches!(
+        &content.body,
+        ContentBody::SynchronizeMessage(sync)
+            if matches!(sync.content.as_ref(), Some(SyncContent::Sent(_)))
+    )
+}
+
+fn group_placeholder(master_key: &[u8]) -> (Uuid, String, String) {
+    let id = Uuid::new_v5(&Uuid::NAMESPACE_OID, master_key);
+    (
+        id,
+        "group".into(),
+        format!("group:{}", &id.to_string()[..8]),
+    )
+}
+
+fn conversation_from_content(content: &Content) -> (Uuid, String, String, Option<Thread>) {
+    match Thread::try_from(content) {
+        Ok(thread) => {
+            let (id, kind, title) = match &thread {
+                Thread::Contact(service_id) => {
+                    let id = service_id.raw_uuid();
+                    (id, "dm".into(), id.to_string())
+                }
+                Thread::Group(master_key) => group_placeholder(master_key),
+            };
+            (id, kind, title, Some(thread))
+        }
+        // Thread::try_from only fails on invalid ids/keys, not on ordinary DMs.
+        Err(_) => {
+            let id = content.metadata.sender.raw_uuid();
+            (id, "dm".into(), id.to_string(), None)
         }
     }
-
-    let id = content.metadata.sender.raw_uuid();
-    (id, "dm".into(), id.to_string())
 }
 
 fn sync_body(sync: &presage::proto::SyncMessage) -> Option<String> {

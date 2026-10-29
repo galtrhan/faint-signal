@@ -18,7 +18,7 @@ Legend: `done` = implemented path exists, `partial` = structure only, `todo` = n
 | Disappearing messages | todo | |
 | Safety Number UX | todo | |
 | Sealed sender | partial | handled inside libsignal/presage |
-| Profiles / contacts sync | partial | `Received::Contacts` logged |
+| Profiles / contacts sync | partial | `Received::Contacts` → titles; request if empty; Note to Self |
 | 1:1 voice signaling parse | partial | `CallMessage` → `CallSignal` |
 | 1:1 voice media (RingRTC) | partial | `NullMediaEngine`; enable `ringrtc` feature after `docs/calling.md` |
 | Voice mute / hangup state | done | state machine in `faint-signal-calls` |

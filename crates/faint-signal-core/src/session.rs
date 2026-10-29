@@ -7,18 +7,21 @@ use faint_signal_store::{AppStore, FaintPaths};
 use futures::channel::oneshot;
 use futures::{future, StreamExt};
 use presage::libsignal_service::configuration::SignalServers;
-use presage::libsignal_service::content::{ContentBody, DataMessage};
+use presage::libsignal_service::content::{Content, ContentBody, DataMessage};
 use presage::libsignal_service::protocol::ServiceId;
 use presage::libsignal_service::prelude::Uuid;
 use presage::model::identity::OnNewIdentity;
 use presage::model::messages::Received;
 use presage::manager::Registered;
+use presage::store::{ContentsStore, Thread};
 use presage::Manager;
 use presage_store_sqlite::SqliteStore;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
+
+const NOTE_TO_SELF: &str = "Note to Self";
 
 pub type Servers = SignalServers;
 
@@ -190,6 +193,17 @@ impl Session {
 
     /// Receive until the first queue empty (or forever if `continuous`).
     pub async fn receive_loop(&mut self, continuous: bool) -> Result<()> {
+        let need_contacts = match self.manager.store().contacts().await {
+            Ok(iter) => iter.filter_map(Result::ok).next().is_none(),
+            Err(_) => true,
+        };
+        if need_contacts {
+            match self.manager.request_contacts().await {
+                Ok(()) => info!("requested contacts sync from primary"),
+                Err(e) => warn!(error = %e, "request_contacts failed"),
+            }
+        }
+
         let mut messages = self
             .manager
             .receive_messages()
@@ -206,6 +220,9 @@ impl Session {
                 }
                 Received::Contacts => {
                     info!("contacts sync received");
+                    if let Err(e) = self.apply_contact_titles().await {
+                        warn!(error = %e, "apply contact titles failed");
+                    }
                 }
                 Received::DecryptionError(service_id) => {
                     warn!(?service_id, "decryption error");
@@ -223,15 +240,71 @@ impl Session {
         Ok(())
     }
 
-    async fn handle_content(
-        &mut self,
-        content: presage::libsignal_service::content::Content,
-    ) -> Result<()> {
+    /// Copy contact names from the presage store into the app conversation list.
+    async fn apply_contact_titles(&mut self) -> Result<()> {
+        let own: Uuid = self.manager.registration_data().service_ids.aci.into();
+        let contacts = self
+            .manager
+            .store()
+            .contacts()
+            .await
+            .map_err(|e| anyhow!("list contacts: {e}"))?;
+        let mut titles: Vec<(Uuid, String)> = contacts
+            .filter_map(Result::ok)
+            .filter(|c| c.uuid != own && !c.name.is_empty())
+            .map(|c| (c.uuid, c.name))
+            .collect();
+        // Own Note to Self may be missing from the contact dump.
+        titles.push((own, NOTE_TO_SELF.to_string()));
+        let applied = self.app.apply_contact_titles(titles)?;
+        info!(applied, "applied contact titles");
+        Ok(())
+    }
+
+    async fn resolve_title(&self, thread: &Thread, fallback: &str) -> String {
+        match thread {
+            Thread::Contact(service_id) => self.dm_title(*service_id).await,
+            Thread::Group(master_key) => self
+                .manager
+                .store()
+                .group(*master_key)
+                .await
+                .ok()
+                .flatten()
+                .map(|g| g.title)
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| fallback.to_string()),
+        }
+    }
+
+    async fn dm_title(&self, service_id: ServiceId) -> String {
+        let own = self.manager.registration_data().service_ids.aci();
+        if service_id == own {
+            return NOTE_TO_SELF.into();
+        }
+        self.manager
+            .store()
+            .contact_by_id(&service_id)
+            .await
+            .ok()
+            .flatten()
+            .filter(|c| !c.name.is_empty())
+            .map(|c| c.name)
+            .unwrap_or_else(|| service_id.raw_uuid().to_string())
+    }
+
+    async fn handle_content(&mut self, content: Content) -> Result<()> {
         match content_to_incoming(&content) {
             Incoming::Message {
-                conversation,
+                mut conversation,
                 message,
+                thread,
             } => {
+                if let Some(title) = self.app.display_title(conversation.id) {
+                    conversation.title = title;
+                } else if let Some(ref thread) = thread {
+                    conversation.title = self.resolve_title(thread, &conversation.title).await;
+                }
                 self.app.upsert_inbound(&conversation, &message)?;
                 if let Some(body) = &message.body {
                     println!("[{}] {}: {}", conversation.title, message.sender, body);

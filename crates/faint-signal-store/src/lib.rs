@@ -68,6 +68,37 @@ impl AppStore {
         self.mutate_and_persist(|state| upsert_conversation_in(state, row))
     }
 
+    /// Apply many contact display names in one persist. Creates missing DM rows.
+    /// Returns how many titles changed (including new rows).
+    pub fn apply_contact_titles(
+        &self,
+        titles: impl IntoIterator<Item = (Uuid, String)>,
+    ) -> Result<u32> {
+        let mut applied = 0u32;
+        self.mutate_and_persist(|state| {
+            for (id, title) in titles {
+                if title.is_empty() {
+                    continue;
+                }
+                if apply_title_in(state, id, title) {
+                    applied += 1;
+                }
+            }
+        })?;
+        Ok(applied)
+    }
+
+    /// Human display name if one is already stored (not a UUID / `group:` placeholder).
+    pub fn display_title(&self, id: Uuid) -> Option<String> {
+        let state = self.state.lock();
+        state
+            .conversations
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| c.title.clone())
+            .filter(|t| !is_placeholder_title(t))
+    }
+
     pub fn list_conversations(&self, limit: u32) -> Result<Vec<ConversationRow>> {
         let state = self.state.lock();
         let mut rows = state.conversations.clone();
@@ -125,9 +156,59 @@ impl AppStore {
 
 fn upsert_conversation_in(state: &mut DiskState, row: &ConversationRow) {
     if let Some(existing) = state.conversations.iter_mut().find(|c| c.id == row.id) {
-        *existing = row.clone();
+        let title = prefer_title(&existing.title, &row.title);
+        let last_message_at = match (existing.last_message_at, row.last_message_at) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => b.or(a),
+        };
+        *existing = ConversationRow {
+            id: row.id,
+            kind: row.kind.clone(),
+            title,
+            last_message_at,
+            unread: row.unread,
+        };
     } else {
         state.conversations.push(row.clone());
+    }
+}
+
+/// Prefer a human name over a UUID / `group:…` placeholder.
+fn prefer_title(existing: &str, incoming: &str) -> String {
+    if incoming.is_empty() {
+        return existing.to_string();
+    }
+    let existing_placeholder = is_placeholder_title(existing);
+    let incoming_placeholder = is_placeholder_title(incoming);
+    if !existing_placeholder && incoming_placeholder {
+        existing.to_string()
+    } else {
+        incoming.to_string()
+    }
+}
+
+fn is_placeholder_title(s: &str) -> bool {
+    s.is_empty() || Uuid::parse_str(s).is_ok() || s.starts_with("group:")
+}
+
+/// Update or insert a DM title. Returns true when the stored title changed.
+fn apply_title_in(state: &mut DiskState, id: Uuid, title: String) -> bool {
+    if let Some(existing) = state.conversations.iter_mut().find(|c| c.id == id) {
+        let next = prefer_title(&existing.title, &title);
+        if next == existing.title {
+            return false;
+        }
+        existing.title = next;
+        true
+    } else {
+        state.conversations.push(ConversationRow {
+            id,
+            kind: "dm".into(),
+            title,
+            last_message_at: None,
+            unread: false,
+        });
+        true
     }
 }
 
