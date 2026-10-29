@@ -64,6 +64,8 @@ pub struct Session {
     pub app: AppStore,
     pub calls: Arc<CallManager>,
     manager: Manager<SqliteStore, Registered>,
+    /// When true, inbound text is written to stdout (CLI receive).
+    pub echo_inbound: bool,
 }
 
 impl Session {
@@ -79,11 +81,17 @@ impl Session {
             app,
             calls: null_call_manager(),
             manager,
+            echo_inbound: false,
         })
     }
 
-    /// Link as a secondary device. Prints a terminal QR for the phone to scan.
-    pub async fn link_device(paths: FaintPaths, config: SessionConfig) -> Result<Self> {
+    /// Link as a secondary device. Calls `on_url` with the provisioning URL for QR display.
+    /// Returns the session and a whoami string from the post-link check.
+    pub async fn link_device(
+        paths: FaintPaths,
+        config: SessionConfig,
+        on_url: impl FnOnce(url::Url) + Send,
+    ) -> Result<(Self, String)> {
         paths.ensure_dirs()?;
         let app = AppStore::open(&paths.app_db)?;
         let store = open_signal_store(&paths.signal_db, config.passphrase.as_deref()).await?;
@@ -94,33 +102,30 @@ impl Session {
             config.device_name.clone(),
             tx,
         );
-        let show_qr = async move {
+        let deliver_url = async move {
             match rx.await {
-                Ok(url) => {
-                    println!("Scan this QR code with Signal on your phone:");
-                    if let Err(e) = qr2term::print_qr(url.to_string()) {
-                        warn!(error = %e, "qr render failed");
-                        println!("Provisioning URL: {url}");
-                    } else {
-                        println!("Provisioning URL: {url}");
-                    }
-                }
+                Ok(url) => on_url(url),
                 Err(e) => error!(error = %e, "linking cancelled before QR"),
             }
         };
-        let (manager, _) = future::join(link, show_qr).await;
+        let (manager, _) = future::join(link, deliver_url).await;
         let manager = manager.map_err(|e| anyhow!("link secondary device: {e}"))?;
         let who = manager
             .whoami()
             .await
             .map_err(|e| anyhow!("whoami after link: {e}"))?;
         info!(?who, "linked secondary device");
-        Ok(Self {
-            paths,
-            app,
-            calls: null_call_manager(),
-            manager,
-        })
+        let whoami = format!("{who:?}");
+        Ok((
+            Self {
+                paths,
+                app,
+                calls: null_call_manager(),
+                manager,
+                echo_inbound: false,
+            },
+            whoami,
+        ))
     }
 
     pub async fn whoami_string(&self) -> Result<String> {
@@ -306,8 +311,10 @@ impl Session {
                     conversation.title = self.resolve_title(thread, &conversation.title).await;
                 }
                 self.app.upsert_inbound(&conversation, &message)?;
-                if let Some(body) = &message.body {
-                    println!("[{}] {}: {}", conversation.title, message.sender, body);
+                if self.echo_inbound {
+                    if let Some(body) = &message.body {
+                        println!("[{}] {}: {}", conversation.title, message.sender, body);
+                    }
                 }
                 if let ContentBody::DataMessage(DataMessage { attachments, .. }) = &content.body {
                     for pointer in attachments {
@@ -367,6 +374,9 @@ pub fn linux_rss_kb() -> Option<u64> {
 }
 
 pub fn print_rss(label: &str) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
     match linux_rss_kb() {
         Some(kb) => println!("RSS {label}: {:.1} MB ({kb} kB)", kb as f64 / 1024.0),
         None => println!("RSS {label}: unavailable (non-Linux or no /proc)"),

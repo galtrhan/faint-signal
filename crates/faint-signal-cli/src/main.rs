@@ -94,8 +94,15 @@ async fn main() -> Result<()> {
                 passphrase: args.passphrase.clone(),
             };
             print_rss("before-link");
-            let session = Session::link_device(faint_paths, config).await?;
-            println!("{}", session.whoami_string().await?);
+            let (_session, whoami) = Session::link_device(faint_paths, config, |url| {
+                println!("Scan this QR code with Signal on your phone:");
+                if let Err(e) = qr2term::print_qr(url.to_string()) {
+                    eprintln!("qr render failed: {e}");
+                }
+                println!("Provisioning URL: {url}");
+            })
+            .await?;
+            println!("{whoami}");
             print_rss("after-link");
         }
         Cmd::Whoami => {
@@ -105,6 +112,7 @@ async fn main() -> Result<()> {
         }
         Cmd::Receive { watch } => {
             let mut session = Session::load(faint_paths, &config).await?;
+            session.echo_inbound = true;
             print_rss("before-receive");
             session.receive_loop(watch).await?;
             print_rss("after-receive");

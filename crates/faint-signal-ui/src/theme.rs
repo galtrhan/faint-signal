@@ -69,6 +69,21 @@ pub fn pane(_theme: &Theme) -> container::Style {
     solid(GRAY_95)
 }
 
+/// Dim layer behind the link-device dialog.
+pub fn link_dim(_theme: &Theme) -> container::Style {
+    solid(Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.55,
+    })
+}
+
+/// Black panel that holds link instructions and the QR code.
+pub fn link_panel(_theme: &Theme) -> container::Style {
+    solid(Color::BLACK)
+}
+
 pub fn call_banner(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(GRAY_85)),

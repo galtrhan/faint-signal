@@ -45,6 +45,15 @@ pub struct SessionHandle {
     pub paths: FaintPaths,
 }
 
+/// Result of [`SessionHandle::link_device`]: handle plus URL, cancel, and done channels.
+pub struct LinkStart {
+    pub handle: SessionHandle,
+    pub provisioning_url: oneshot::Receiver<String>,
+    pub cancel: oneshot::Sender<()>,
+    /// Whoami string on success, or an error message if link fails / is cancelled.
+    pub done: oneshot::Receiver<Result<String, String>>,
+}
+
 impl std::fmt::Debug for SessionHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SessionHandle")
@@ -87,10 +96,16 @@ impl SessionHandle {
         })
     }
 
-    pub fn link_device(config: SessionConfig) -> Result<Self> {
+    /// Start linking. The provisioning URL arrives on `provisioning_url`.
+    /// Send on `cancel` (or drop it) to abort before the phone finishes the scan.
+    /// `done` resolves with whoami (Ok) or an error string when link finishes or fails.
+    pub fn link_device(config: SessionConfig) -> Result<LinkStart> {
         let faint_paths = paths()?;
         faint_paths.ensure_dirs()?;
         let (tx, rx) = mpsc::unbounded_channel();
+        let (url_tx, url_rx) = oneshot::channel::<String>();
+        let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+        let (done_tx, done_rx) = oneshot::channel::<Result<String, String>>();
         let paths_clone = faint_paths.clone();
         std::thread::Builder::new()
             .name("faintsignal-link".into())
@@ -102,13 +117,23 @@ impl SessionHandle {
                 let local = tokio::task::LocalSet::new();
                 local.block_on(&rt, async move {
                     print_rss("before-link-actor");
-                    match Session::link_device(paths_clone.clone(), config).await {
-                        Ok(session) => {
+                    let link = Session::link_device(paths_clone.clone(), config, move |url| {
+                        let _ = url_tx.send(url.to_string());
+                    });
+                    tokio::pin!(link);
+                    let outcome = tokio::select! {
+                        result = &mut link => result,
+                        _ = cancel_rx => Err(anyhow!("link cancelled")),
+                    };
+                    match outcome {
+                        Ok((session, whoami)) => {
                             print_rss("after-link-actor");
+                            let _ = done_tx.send(Ok(whoami));
                             run_actor(session, rx).await;
                         }
                         Err(e) => {
                             tracing::error!(error = %e, "link failed");
+                            let _ = done_tx.send(Err(e.to_string()));
                             let mut rx = rx;
                             while let Some(cmd) = rx.recv().await {
                                 fail_cmd(cmd, anyhow!("link failed: {e}"));
@@ -117,9 +142,14 @@ impl SessionHandle {
                     }
                 });
             })?;
-        Ok(Self {
-            tx,
-            paths: faint_paths,
+        Ok(LinkStart {
+            handle: Self {
+                tx,
+                paths: faint_paths,
+            },
+            provisioning_url: url_rx,
+            cancel: cancel_tx,
+            done: done_rx,
         })
     }
 

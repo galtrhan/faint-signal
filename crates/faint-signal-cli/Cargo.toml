@@ -16,6 +16,7 @@ anyhow.workspace = true
 clap.workspace = true
 faint-signal-core.workspace = true
 faint-signal-store.workspace = true
+qr2term.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

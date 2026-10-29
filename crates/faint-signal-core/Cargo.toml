@@ -16,7 +16,6 @@ faint-signal-store.workspace = true
 futures.workspace = true
 presage.workspace = true
 presage-store-sqlite.workspace = true
-qr2term.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -4,7 +4,7 @@ mod actor;
 mod convert;
 mod session;
 
-pub use actor::SessionHandle;
+pub use actor::{LinkStart, SessionHandle};
 pub use convert::Incoming;
 pub use session::{
     linux_rss_kb, open_signal_store, print_rss, Session, SessionConfig, Servers,

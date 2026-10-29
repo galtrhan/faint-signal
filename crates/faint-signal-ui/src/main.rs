@@ -8,7 +8,10 @@ use faint_signal_calls::{CallPhase, CallSnapshot};
 use faint_signal_core::{print_rss, SessionConfig, SessionHandle};
 use faint_signal_store::{ConversationRow, MessageRow};
 use iced::alignment::{Horizontal, Vertical};
-use iced::widget::{button, column, container, row, scrollable, text, text_input, toggler, Space};
+use iced::widget::{
+    button, column, container, qr_code, row, scrollable, stack, text, text_input, toggler, Space,
+};
+use iced::widget::qr_code::Data as QrData;
 use iced::window::{self, Id as WindowId};
 use iced::{exit, Color, Element, Length, Padding, Size, Subscription, Task, Theme};
 use settings::UiSettings;
@@ -19,17 +22,26 @@ use uuid::Uuid;
 pub(crate) const APP_ICON_PNG: &[u8] = include_bytes!("../assets/icons/faintsignal-256.png");
 
 fn main() -> iced::Result {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("faint_signal=info".parse().unwrap()),
-        )
-        .init();
+    init_logging();
     print_rss("ui-start");
     iced::daemon(App::title, App::update, App::view)
         .theme(|_app, _id| Theme::Dark)
         .subscription(App::subscription)
         .run_with(App::new)
+}
+
+/// Release builds stay quiet unless `RUST_LOG` is set. Debug always logs.
+fn init_logging() {
+    let force = cfg!(debug_assertions) || std::env::var_os("RUST_LOG").is_some();
+    if !force {
+        return;
+    }
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive("faint_signal=info".parse().unwrap()),
+        )
+        .try_init();
 }
 
 fn app_icon() -> Option<window::Icon> {
@@ -53,6 +65,12 @@ struct App {
     call: CallSnapshot,
     session: Option<SessionHandle>,
     linking: bool,
+    /// QR payload while the link overlay is open.
+    link_qr: Option<QrData>,
+    /// Abort handle for the whoami wait task.
+    link_abort: Option<iced::task::Handle>,
+    /// Cancels the link actor before the phone finishes scanning.
+    link_cancel: Option<tokio::sync::oneshot::Sender<()>>,
     /// True while a receive+refresh task is in flight (skip stacked 5s ticks).
     syncing: bool,
     prefs: UiSettings,
@@ -76,7 +94,9 @@ enum Message {
     Refresh,
     Refreshed(Result<BootData, String>),
     LinkDevice,
+    LinkQr(Result<String, String>),
     LinkDone(Result<(SessionHandle, String), String>),
+    CancelLink,
     CallPeer,
     Hangup,
     AcceptCall,
@@ -127,6 +147,9 @@ impl App {
                 call: CallSnapshot::idle(),
                 session: None,
                 linking: false,
+                link_qr: None,
+                link_abort: None,
+                link_cancel: None,
                 syncing: false,
                 prefs,
                 main_window,
@@ -301,13 +324,59 @@ impl App {
                 if self.linking {
                     return Task::none();
                 }
+                let start = match SessionHandle::link_device(SessionConfig::default()) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        self.status = format!("Link failed: {e}");
+                        return Task::none();
+                    }
+                };
                 self.linking = true;
-                self.status =
-                    "Linking… scan the QR printed on the terminal that started the UI".into();
-                return Task::perform(link_device(), Message::LinkDone);
+                self.link_qr = None;
+                self.link_cancel = Some(start.cancel);
+                self.status = "Preparing link…".into();
+                let handle = start.handle;
+                let url_rx = start.provisioning_url;
+                let done_rx = start.done;
+                let wait_url = Task::perform(
+                    async move {
+                        url_rx
+                            .await
+                            .map_err(|_| "link cancelled before QR".into())
+                    },
+                    Message::LinkQr,
+                );
+                let (wait_done, abort) =
+                    Task::perform(wait_link(handle, done_rx), Message::LinkDone).abortable();
+                self.link_abort = Some(abort);
+                return Task::batch([wait_url, wait_done]);
+            }
+            Message::LinkQr(Ok(url)) => {
+                if !self.linking {
+                    return Task::none();
+                }
+                match QrData::new(url.as_bytes()) {
+                    Ok(data) => {
+                        self.link_qr = Some(data);
+                        self.status = "Scan the QR code with Signal on your phone".into();
+                    }
+                    Err(e) => {
+                        self.clear_link_ui();
+                        self.status = format!("QR encode failed: {e}");
+                    }
+                }
+            }
+            Message::LinkQr(Err(e)) => {
+                if self.linking {
+                    self.clear_link_ui();
+                    self.status = e;
+                }
             }
             Message::LinkDone(Ok((handle, who))) => {
-                self.linking = false;
+                if !self.linking {
+                    return Task::none();
+                }
+                self.clear_link_ui();
                 self.session = Some(handle.clone());
                 self.syncing = true;
                 self.status = format!("Syncing inbox… ({who})");
@@ -317,8 +386,22 @@ impl App {
                 );
             }
             Message::LinkDone(Err(e)) => {
-                self.linking = false;
-                self.status = format!("Link failed: {e}");
+                if !self.linking {
+                    return Task::none();
+                }
+                self.clear_link_ui();
+                self.status = if e.contains("cancelled") {
+                    "Link cancelled".into()
+                } else {
+                    format!("Link failed: {e}")
+                };
+            }
+            Message::CancelLink => {
+                if !self.linking {
+                    return Task::none();
+                }
+                self.clear_link_ui();
+                self.status = "Link cancelled".into();
             }
             Message::CallPeer => {
                 let Some(peer) = self.selected else {
@@ -425,6 +508,17 @@ impl App {
         let id = self.selected?;
         self.conversations.iter().find(|c| c.id == id)
     }
+
+    fn clear_link_ui(&mut self) {
+        if let Some(abort) = self.link_abort.take() {
+            abort.abort();
+        }
+        if let Some(cancel) = self.link_cancel.take() {
+            let _ = cancel.send(());
+        }
+        self.linking = false;
+        self.link_qr = None;
+    }
 }
 
 fn main_view(app: &App) -> Element<'_, Message> {
@@ -435,10 +529,84 @@ fn main_view(app: &App) -> Element<'_, Message> {
     ]
     .height(Length::Fill);
 
-    container(body)
+    let base = container(body)
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(|_| theme::solid(GRAY_95))
+        .style(|_| theme::solid(GRAY_95));
+
+    if app.linking {
+        stack![base, link_overlay(app)]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    } else {
+        base.into()
+    }
+}
+
+fn link_overlay(app: &App) -> Element<'_, Message> {
+    let qr: Element<'_, Message> = match &app.link_qr {
+        Some(data) => container(qr_code(data).cell_size(6))
+            .padding(12)
+            .style(|_| theme::solid(Color::WHITE))
+            .into(),
+        None => text("Preparing QR code…")
+            .size(14)
+            .color(GRAY_45)
+            .into(),
+    };
+
+    let mut steps = column![
+        text(
+            "On your phone open Signal, then open Settings, Linked devices, and Link new device."
+        )
+        .size(14)
+        .color(GRAY_25),
+    ]
+    .spacing(8)
+    .align_x(Horizontal::Center);
+
+    if app.link_qr.is_some() {
+        steps = steps.push(
+            text("Scan this QR code with your phone.")
+                .size(14)
+                .color(GRAY_25),
+        );
+    }
+
+    let panel = container(
+        column![
+            row![
+                text("Link device").size(20).color(GRAY_02),
+                Space::with_width(Length::Fill),
+                button(text("×").size(18))
+                    .padding([4.0, 10.0])
+                    .style(theme::ghost_btn)
+                    .on_press(Message::CancelLink),
+            ]
+            .align_y(Vertical::Center),
+            steps,
+            Space::with_height(8),
+            qr,
+            Space::with_height(12),
+            button(text("Cancel linking").size(13))
+                .padding([10.0, 16.0])
+                .style(theme::danger_btn)
+                .on_press(Message::CancelLink),
+        ]
+        .spacing(10)
+        .align_x(Horizontal::Center)
+        .max_width(420),
+    )
+    .padding(28)
+    .style(theme::link_panel);
+
+    container(panel)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .style(theme::link_dim)
         .into()
 }
 
@@ -935,19 +1103,15 @@ async fn send_text(session: SessionHandle, peer: Uuid, body: String) -> Result<(
     session.send_text(peer, body).await.map_err(err)
 }
 
-async fn link_device() -> Result<(SessionHandle, String), String> {
-    let handle = SessionHandle::link_device(SessionConfig::default()).map_err(err)?;
-    let mut last = String::from("link in progress");
-    for _ in 0..600 {
-        match handle.whoami().await {
-            Ok(who) => return Ok((handle, who)),
-            Err(e) => {
-                last = e.to_string();
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            }
-        }
+async fn wait_link(
+    handle: SessionHandle,
+    done: tokio::sync::oneshot::Receiver<Result<String, String>>,
+) -> Result<(SessionHandle, String), String> {
+    match done.await {
+        Ok(Ok(whoami)) => Ok((handle, whoami)),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err("link cancelled".into()),
     }
-    Err(format!("timed out waiting for link: {last}"))
 }
 
 async fn start_call(session: SessionHandle, peer: Uuid) -> Result<(), String> {
