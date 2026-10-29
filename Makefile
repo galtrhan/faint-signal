@@ -1,5 +1,7 @@
 # FaintSignal — release builds for CLI and iced UI.
 CARGO ?= cargo
+RUSTFLAGS ?= -C link-arg=-fuse-ld=mold
+export RUSTFLAGS
 # Empty for debug. Set RELEASE=1 (default) for --release.
 RELEASE ?= 1
 ifeq ($(RELEASE),1)

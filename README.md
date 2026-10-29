@@ -22,21 +22,27 @@ This is an unofficial client. Signal does not support it. Protocol fields move. 
 
 ## Build
 
+The Makefile exports `RUSTFLAGS='-C link-arg=-fuse-ld=mold'`, so the targets below invoke `cargo` with **mold** as the linker. Prefer `make` over bare `cargo` if you want that default. **lld** from LLVM works too if you set `RUSTFLAGS='-C link-arg=-fuse-ld=lld'` for a run.
+
 ```bash
 # system deps (Arch / CachyOS example)
-sudo pacman -S base-devel openssl sqlcipher cmake protobuf clang
+sudo pacman -S base-devel openssl sqlcipher cmake protobuf clang mold
 
-make          # release cli + ui
+make          # release cli + ui (same as make build)
+make build
 make cli      # release CLI only
 make ui       # release UI only
 make debug    # debug cli + ui
-make check
+make check    # cargo check both packages
+make run      # run the iced UI
 make clean
+make help
 ```
 
-Same with cargo:
+Same builds without `make` (set linker yourself):
 
 ```bash
+export RUSTFLAGS='-C link-arg=-fuse-ld=mold'
 cargo build -p faint-signal-cli --release
 cargo build -p faint-signal-ui --release
 ```
@@ -70,8 +76,8 @@ Optional DB passphrase: `FAINTSIGNAL_PASSPHRASE` or `--passphrase`.
 ## GUI
 
 ```bash
-make run
-# or: cargo run -p faint-signal-ui
+make run      # mold via Makefile RUSTFLAGS
+# or: cargo run -p faint-signal-ui   # export RUSTFLAGS yourself for mold
 ```
 
 Link from the UI button. The QR prints on the terminal that started the process.
