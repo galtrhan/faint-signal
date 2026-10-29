@@ -8,7 +8,7 @@ else
 CARGO_FLAGS :=
 endif
 
-.PHONY: all build cli ui debug check clean help
+.PHONY: all build cli ui run debug check clean help
 
 all: build
 
@@ -19,6 +19,9 @@ cli:
 
 ui:
 	$(CARGO) build -p faint-signal-ui $(CARGO_FLAGS)
+
+run:
+	$(CARGO) run -p faint-signal-ui
 
 debug:
 	$(MAKE) build RELEASE=0
@@ -31,5 +34,6 @@ clean:
 	$(CARGO) clean
 
 help:
-	@echo "Targets: all/build (release cli+ui), cli, ui, debug, check, clean"
+	@echo "Targets: all/build (release cli+ui), cli, ui, run, debug, check, clean"
+	@echo "Run UI:  make run"
 	@echo "Debug:   make debug   or   make RELEASE=0"

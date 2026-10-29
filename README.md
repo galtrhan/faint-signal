@@ -26,6 +26,17 @@ This is an unofficial client. Signal does not support it. Protocol fields move. 
 # system deps (Arch / CachyOS example)
 sudo pacman -S base-devel openssl sqlcipher cmake protobuf clang
 
+make          # release cli + ui
+make cli      # release CLI only
+make ui       # release UI only
+make debug    # debug cli + ui
+make check
+make clean
+```
+
+Same with cargo:
+
+```bash
 cargo build -p faint-signal-cli --release
 cargo build -p faint-signal-ui --release
 ```
@@ -59,7 +70,8 @@ Optional DB passphrase: `FAINTSIGNAL_PASSPHRASE` or `--passphrase`.
 ## GUI
 
 ```bash
-cargo run -p faint-signal-ui
+make run
+# or: cargo run -p faint-signal-ui
 ```
 
 Link from the UI button. The QR prints on the terminal that started the process.
